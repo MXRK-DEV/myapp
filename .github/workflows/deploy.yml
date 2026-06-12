@@ -281,7 +281,7 @@ jobs:
   # ============================================================
   deploy-production:
     name: Deploy to Production
-    needs: deploy-staging
+    needs: [build, deploy-staging]
     runs-on: ubuntu-latest
     environment: production
     steps:
