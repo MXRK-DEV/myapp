@@ -2,19 +2,18 @@ name: Deploy
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
 
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: myapp
   ECS_CLUSTER: myapp-cluster
   ECS_SERVICE_STG: myapp-staging
-  ECS_SERVICE_PRD: myapp-production
   CONTAINER_NAME: myapp
 
 jobs:
   # ============================================================
-  # Job 1: Test & Lint (gate for everything else)
+  # Job 1: Test & Lint
   # ============================================================
   test:
     name: Test & Lint
@@ -22,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
+        with: { node-version: "20", cache: "npm" }
       - run: npm ci
       - run: npm run lint
       - run: npm test -- --ci
@@ -135,84 +134,221 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-  # ============================================================
-  # Job 4: Approve + Deploy to Production
-  # 'environment: production' = manual approval gate.
-  # Configure in GitHub: Settings → Environments → production
-  #   → Required reviewers
-  # ============================================================
-  deploy-production:
-    name: Deploy to Production
-    needs: deploy-staging
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
+# name: Deploy
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+# on:
+#   push:
+#     branches: [ main ]
 
-      - name: Download current production task definition
-        run: |
-          aws ecs describe-task-definition \
-            --task-definition myapp-production \
-            --query taskDefinition > task-def.json
+# env:
+#   AWS_REGION: us-east-1
+#   ECR_REPOSITORY: myapp
+#   ECS_CLUSTER: myapp-cluster
+#   ECS_SERVICE_STG: myapp-staging
+#   ECS_SERVICE_PRD: myapp-production
+#   CONTAINER_NAME: myapp
 
-      - name: Update ECS task def with new image
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-def.json
-          container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ needs.build.outputs.image }}
+# jobs:
+#   # ============================================================
+#   # Job 1: Test & Lint (gate for everything else)
+#   # ============================================================
+#   test:
+#     name: Test & Lint
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: actions/setup-node@v4
+#         with: { node-version: '20', cache: 'npm' }
+#       - run: npm ci
+#       - run: npm run lint
+#       - run: npm test -- --ci
 
-      - name: Deploy to ECS production
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${{ env.ECS_SERVICE_PRD }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
+#   # ============================================================
+#   # Job 2: Build & Push Docker image to ECR
+#   # ============================================================
+#   build:
+#     name: Build & Push to ECR
+#     needs: test
+#     runs-on: ubuntu-latest
+#     outputs:
+#       image: ${{ steps.build-image.outputs.image }}
+#     steps:
+#       - uses: actions/checkout@v4
 
-      - name: Notify Slack — production deployed
-        if: success()
-        uses: slackapi/slack-github-action@v1
-        with:
-          payload: |
-            {
-              "text": ":white_check_mark: *PRODUCTION* deploy succeeded — commit ${{ github.sha }} approved & shipped by ${{ github.actor }}"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Notify Slack — production FAILED
-        if: failure()
-        uses: slackapi/slack-github-action@v1
-        with:
-          payload: |
-            {
-              "text": ":rotating_light: *PRODUCTION* deploy FAILED — commit ${{ github.sha }} — INVESTIGATE NOW"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+#       - name: Login to Amazon ECR
+#         id: login-ecr
+#         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Send failure email
-        if: failure()
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: ${{ secrets.EMAIL_USERNAME }}
-          password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: "PRODUCTION DEPLOY FAILED - ${{ github.repository }}"
-          to: devops-team@example.com
-          from: CI/CD Bot
-          body: |
-            Production deployment failed for commit ${{ github.sha }}.
-            Triggered by: ${{ github.actor }}
-            Check GitHub Actions logs immediately:
-            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+#       - name: Build, tag, and push image to ECR
+#         id: build-image
+#         env:
+#           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+#           IMAGE_TAG: ${{ github.sha }}
+#         run: |
+#           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+#           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+#           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+#           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+#           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+#       - name: Notify Slack — build failed
+#         if: failure()
+#         uses: slackapi/slack-github-action@v1
+#         with:
+#           payload: |
+#             {
+#               "text": ":x: Build/push to ECR FAILED on commit ${{ github.sha }} by ${{ github.actor }}"
+#             }
+#         env:
+#           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+#   # ============================================================
+#   # Job 3: Deploy to Staging (ECS)
+#   # ============================================================
+#   deploy-staging:
+#     name: Deploy to Staging
+#     needs: build
+#     runs-on: ubuntu-latest
+#     environment: staging
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#           aws-region: ${{ env.AWS_REGION }}
+
+#       - name: Download current staging task definition
+#         run: |
+#           aws ecs describe-task-definition \
+#             --task-definition myapp-staging \
+#             --query taskDefinition > task-def.json
+
+#       - name: Update ECS task def with new image
+#         id: task-def
+#         uses: aws-actions/amazon-ecs-render-task-definition@v1
+#         with:
+#           task-definition: task-def.json
+#           container-name: ${{ env.CONTAINER_NAME }}
+#           image: ${{ needs.build.outputs.image }}
+
+#       - name: Deploy to ECS staging
+#         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+#         with:
+#           task-definition: ${{ steps.task-def.outputs.task-definition }}
+#           service: ${{ env.ECS_SERVICE_STG }}
+#           cluster: ${{ env.ECS_CLUSTER }}
+#           wait-for-service-stability: true
+
+#       - name: Notify Slack — staging deployed
+#         if: success()
+#         uses: slackapi/slack-github-action@v1
+#         with:
+#           payload: |
+#             {
+#               "text": ":rocket: Staging deploy succeeded — commit ${{ github.sha }} by ${{ github.actor }}"
+#             }
+#         env:
+#           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+#       - name: Notify Slack — staging deploy failed
+#         if: failure()
+#         uses: slackapi/slack-github-action@v1
+#         with:
+#           payload: |
+#             {
+#               "text": ":x: Staging deploy FAILED — commit ${{ github.sha }} by ${{ github.actor }}"
+#             }
+#         env:
+#           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+#   # ============================================================
+#   # Job 4: Approve + Deploy to Production
+#   # 'environment: production' = manual approval gate.
+#   # Configure in GitHub: Settings → Environments → production
+#   #   → Required reviewers
+#   # ============================================================
+#   deploy-production:
+#     name: Deploy to Production
+#     needs: deploy-staging
+#     runs-on: ubuntu-latest
+#     environment: production
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#           aws-region: ${{ env.AWS_REGION }}
+
+#       - name: Download current production task definition
+#         run: |
+#           aws ecs describe-task-definition \
+#             --task-definition myapp-production \
+#             --query taskDefinition > task-def.json
+
+#       - name: Update ECS task def with new image
+#         id: task-def
+#         uses: aws-actions/amazon-ecs-render-task-definition@v1
+#         with:
+#           task-definition: task-def.json
+#           container-name: ${{ env.CONTAINER_NAME }}
+#           image: ${{ needs.build.outputs.image }}
+
+#       - name: Deploy to ECS production
+#         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+#         with:
+#           task-definition: ${{ steps.task-def.outputs.task-definition }}
+#           service: ${{ env.ECS_SERVICE_PRD }}
+#           cluster: ${{ env.ECS_CLUSTER }}
+#           wait-for-service-stability: true
+
+#       - name: Notify Slack — production deployed
+#         if: success()
+#         uses: slackapi/slack-github-action@v1
+#         with:
+#           payload: |
+#             {
+#               "text": ":white_check_mark: *PRODUCTION* deploy succeeded — commit ${{ github.sha }} approved & shipped by ${{ github.actor }}"
+#             }
+#         env:
+#           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+#       - name: Notify Slack — production FAILED
+#         if: failure()
+#         uses: slackapi/slack-github-action@v1
+#         with:
+#           payload: |
+#             {
+#               "text": ":rotating_light: *PRODUCTION* deploy FAILED — commit ${{ github.sha }} — INVESTIGATE NOW"
+#             }
+#         env:
+#           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+#       - name: Send failure email
+#         if: failure()
+#         uses: dawidd6/action-send-mail@v3
+#         with:
+#           server_address: smtp.gmail.com
+#           server_port: 465
+#           username: ${{ secrets.EMAIL_USERNAME }}
+#           password: ${{ secrets.EMAIL_PASSWORD }}
+#           subject: "PRODUCTION DEPLOY FAILED - ${{ github.repository }}"
+#           to: devops-team@example.com
+#           from: CI/CD Bot
+#           body: |
+#             Production deployment failed for commit ${{ github.sha }}.
+#             Triggered by: ${{ github.actor }}
+#             Check GitHub Actions logs immediately:
+#             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
