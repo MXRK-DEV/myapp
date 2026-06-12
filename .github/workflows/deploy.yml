@@ -351,4 +351,4 @@ jobs:
 #             Production deployment failed for commit ${{ github.sha }}.
 #             Triggered by: ${{ github.actor }}
 #             Check GitHub Actions logs immediately:
-#             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+#             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}.
