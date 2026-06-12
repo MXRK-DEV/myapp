@@ -1,0 +1,167 @@
+name: Deploy to EC2 (Alternative to ECS)
+
+# Use this workflow INSTEAD of deploy.yml if deploying to a plain EC2
+# instance running Docker, rather than ECS Fargate.
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  ECR_REPOSITORY: myapp
+  AWS_REGION: us-east-1
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test -- --ci
+
+  build:
+    name: Build & Push to ECR
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+  deploy-staging:
+    name: Deploy to Staging EC2
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: SSH and deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+              docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+            docker pull ${{ needs.build.outputs.image }}
+            docker stop myapp || true
+            docker rm myapp || true
+            docker run -d --name myapp -p 3000:3000 --restart unless-stopped \
+              -e APP_VERSION=${{ github.sha }} \
+              ${{ needs.build.outputs.image }}
+            sleep 5
+            curl -f http://localhost:3000/health
+
+      - name: Notify Slack — staging deployed
+        if: success()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            { "text": ":rocket: Staging (EC2) deploy succeeded — ${{ github.sha }}" }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack — staging failed
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            { "text": ":x: Staging (EC2) deploy FAILED — ${{ github.sha }}" }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  deploy-production:
+    name: Deploy to Production EC2
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production   # manual approval gate (Settings → Environments)
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: SSH and deploy to production
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+              docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+            docker pull ${{ needs.build.outputs.image }}
+            docker stop myapp || true
+            docker rm myapp || true
+            docker run -d --name myapp -p 3000:3000 --restart unless-stopped \
+              -e APP_VERSION=${{ github.sha }} \
+              ${{ needs.build.outputs.image }}
+            sleep 5
+            curl -f http://localhost:3000/health
+
+      - name: Notify Slack — production deployed
+        if: success()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            { "text": ":white_check_mark: *PRODUCTION* (EC2) deploy succeeded — ${{ github.sha }}" }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack — production failed
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            { "text": ":rotating_light: *PRODUCTION* (EC2) deploy FAILED — ${{ github.sha }} — INVESTIGATE NOW" }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Send failure email
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "PRODUCTION DEPLOY FAILED - ${{ github.repository }}"
+          to: devops-team@example.com
+          from: CI/CD Bot
+          body: |
+            Production EC2 deployment failed for commit ${{ github.sha }}.
+            Check: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
