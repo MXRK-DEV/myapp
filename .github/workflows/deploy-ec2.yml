@@ -1,28 +1,33 @@
-name: Deploy to EC2 (Alternative to ECS)
-
-# Use this workflow INSTEAD of deploy.yml if deploying to a plain EC2
-# instance running Docker, rather than ECS Fargate.
+name: Deploy to EC2
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
 
 env:
   ECR_REPOSITORY: myapp
   AWS_REGION: us-east-1
+  # Added globally here so EVERY job can see it instantly without sharing outputs
+  ECR_REGISTRY: 914319167984.dkr.ecr.us-east-1.amazonaws.com
 
 jobs:
+  # ============================================================
+  # Job 1: Quality Check Gate
+  # ============================================================
   test:
     name: Test & Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
+        with: { node-version: "20", cache: "npm" }
       - run: npm ci
       - run: npm run lint
       - run: npm test -- --ci
 
+  # ============================================================
+  # Job 2: Build & Push Docker image to ECR
+  # ============================================================
   build:
     name: Build & Push to ECR
     needs: test
@@ -46,13 +51,15 @@ jobs:
       - name: Build and push
         id: build-image
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          docker build -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG .
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+          echo "image=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
+  # ============================================================
+  # Job 3: Continuous Deployment to Staging Node
+  # ============================================================
   deploy-staging:
     name: Deploy to Staging EC2
     needs: build
@@ -74,7 +81,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-              docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
             docker pull ${{ needs.build.outputs.image }}
             docker stop myapp || true
             docker rm myapp || true
@@ -102,11 +109,14 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
+  # ============================================================
+  # Job 4: Manual Approval Guarded Production Launch
+  # ============================================================
   deploy-production:
     name: Deploy to Production EC2
-    needs: deploy-staging
+    needs: [build, deploy-staging]
     runs-on: ubuntu-latest
-    environment: production   # manual approval gate (Settings → Environments)
+    environment: production
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -123,7 +133,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-              docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
             docker pull ${{ needs.build.outputs.image }}
             docker stop myapp || true
             docker rm myapp || true
